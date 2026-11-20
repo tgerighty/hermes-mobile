@@ -17,7 +17,8 @@ final class AppLayoutTests: XCTestCase {
   func testNarrowOrUnresolvedSizeClassesUseTheStack() {
     let host = LayoutHost()
     for (horizontal, vertical): (UserInterfaceSizeClass?, UserInterfaceSizeClass?) in [
-      (.compact, .regular), (.compact, .compact), (nil, .regular), (.regular, nil)
+      (.compact, .regular), (.compact, .compact), (nil, .regular), (.regular, nil),
+      (nil, nil)
     ] {
       host.render(horizontal: horizontal, vertical: vertical)
       XCTAssertEqual(host.store.layout, .compact)
@@ -45,12 +46,34 @@ final class AppLayoutTests: XCTestCase {
     }
     let host = LayoutHost(store: store)
     host.render(horizontal: .regular, vertical: .regular)
+    XCTAssertEqual(host.store.layout, .regular)
+    XCTAssertTrue(host.store.path.isEmpty, "Regular layout must not retain a sidebar chat marker")
     let transcript = try XCTUnwrap(host.descendants(of: TranscriptCollectionView.self).first)
     let composer = try XCTUnwrap(host.descendants(of: ComposerInputTextView.self).first)
     XCTAssertEqual(host.descendants(of: ComposerInputTextView.self).count, 1)
     XCTAssertEqual(host.descendants(of: TranscriptCollectionView.self).count, 1)
+    let split = try XCTUnwrap(host.splitViewController())
+    let detail = try XCTUnwrap(split.viewController(for: .secondary))
+    XCTAssertTrue(transcript.isDescendant(of: detail.view))
+    XCTAssertTrue(composer.isDescendant(of: detail.view))
     XCTAssertGreaterThan(transcript.bounds.width, host.window.bounds.width / 2)
     XCTAssertGreaterThan(composer.convert(composer.bounds, to: host.window).minX, 280)
+  }
+
+  func testDuoSizedWindowsUseTheResolvedLayout() {
+    // This checks classification at the measured sizes, not native hinge/rotation behavior.
+    // Native simulator captures are documented in docs/verification/duo-layout/README.md.
+    let cases: [(CGRect, UserInterfaceSizeClass, UserInterfaceSizeClass, AppFeature.Layout)] = [
+      (CGRect(x: 0, y: 0, width: 669, height: 951), .regular, .regular, .regular),
+      (CGRect(x: 0, y: 0, width: 951, height: 669), .regular, .regular, .regular),
+      (CGRect(x: 0, y: 0, width: 466, height: 678), .compact, .regular, .compact)
+    ]
+
+    for (frame, horizontal, vertical, expectedLayout) in cases {
+      let host = LayoutHost(frame: frame)
+      host.render(horizontal: horizontal, vertical: vertical)
+      XCTAssertEqual(host.store.layout, expectedLayout, "frame: \(frame)")
+    }
   }
 }
 
@@ -58,12 +81,16 @@ final class AppLayoutTests: XCTestCase {
 private final class LayoutHost {
   let store: StoreOf<AppFeature>
   private let controller = UIHostingController(rootView: AnyView(EmptyView()))
-  let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 950, height: 670))
+  let window: UIWindow
 
-  init(store: StoreOf<AppFeature>? = nil) {
+  init(
+    store: StoreOf<AppFeature>? = nil,
+    frame: CGRect = CGRect(x: 0, y: 0, width: 950, height: 670)
+  ) {
     self.store = store ?? Store(initialState: AppFeature.State()) {
       AppFeature().ignoring(\.task)
     }
+    window = UIWindow(frame: frame)
     window.rootViewController = controller
     window.isHidden = false
   }
@@ -86,6 +113,14 @@ private final class LayoutHost {
       ((view as? T).map { [$0] } ?? []) + view.subviews.flatMap(collect)
     }
     return collect(controller.view)
+  }
+
+  func splitViewController() -> UISplitViewController? {
+    func find(in parent: UIViewController) -> UISplitViewController? {
+      if let split = parent as? UISplitViewController { return split }
+      return parent.children.lazy.compactMap { find(in: $0) }.first
+    }
+    return find(in: controller)
   }
 
   deinit {
